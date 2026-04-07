@@ -1,4 +1,5 @@
 import express from 'express';
+import { createProxyMiddleware } from 'http-proxy-middleware';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import dotenv from 'dotenv';
@@ -17,8 +18,13 @@ dotenv.config();
 // Connect to MongoDB
 mongoose.connect(process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/shopify_order_app', {
   serverSelectionTimeoutMS: 5000
-}).then(() => console.log('Connected to MongoDB'))
-  .catch(err => console.error('MongoDB connection error:', err));
+}).then(() => console.log('✅ Connected to MongoDB'))
+  .catch(err => {
+    console.error('❌ MongoDB connection error:', err.message);
+    if (err.message.includes('Authentication failed')) {
+      console.error('👉 TIP: Check your .env file and ensure the username and password match your MongoDB Atlas Database User.');
+    }
+  });
 
 const app = express();
 app.use(cors());
@@ -205,6 +211,19 @@ app.get('/api/orders/stream', (req, res) => {
     clients[shop] = clients[shop].filter(client => client !== res);
   });
 });
+
+// In development, any request that doesn't match an API route is proxied to Vite
+if (process.env.NODE_ENV !== 'production') {
+  app.use(
+    '/',
+    createProxyMiddleware({
+      target: 'http://localhost:5173',
+      changeOrigin: true,
+      ws: true,
+      pathFilter: (path) => !path.startsWith('/api') // Don't proxy API or auth routes
+    })
+  );
+}
 
 // Serve frontend in production
 const isProd = process.env.NODE_ENV === 'production';
