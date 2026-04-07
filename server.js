@@ -209,7 +209,7 @@ app.get('/api/orders/stream', (req, res) => {
 // Serve frontend in production
 const isProd = process.env.NODE_ENV === 'production';
 if (isProd) {
-  const buildPath = path.join(__dirname, 'frontend', 'dist');
+  const buildPath = path.join(process.cwd(), 'frontend', 'dist');
   app.use(express.static(buildPath));
   
   // Any request that doesn't match an API route gets the React App
