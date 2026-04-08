@@ -29,6 +29,13 @@ mongoose.connect(process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/shopify_o
 const app = express();
 app.use(cors());
 app.use(cookieParser());
+
+// Request logger middleware
+app.use((req, res, next) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+  next();
+});
+
 const clients = {};
 
 function notifyClients(shop, count) {
@@ -40,10 +47,10 @@ function notifyClients(shop, count) {
 const shopify = shopifyApi({
   apiKey: process.env.SHOPIFY_API_KEY || 'fake_api_key',
   apiSecretKey: process.env.SHOPIFY_API_SECRET || 'fake_api_secret',
-  scopes: ['read_orders'],
+  scopes: process.env.SCOPES ? process.env.SCOPES.split(',') : ['read_orders'],
   hostName: process.env.HOST ? process.env.HOST.replace(/https:\/\//, '') : 'localhost:5000',
   hostScheme: 'https',
-  apiVersion: '2024-01',
+  apiVersion: '2026-04', // Updated to the latest April 2026 version
   isEmbeddedApp: true,
 });
 
@@ -84,7 +91,7 @@ app.post('/api/webhooks', express.text({ type: '*/*' }), async (req, res) => {
   } catch (error) {
     console.error(`[Webhook] Failed to process webhook: ${error.message}`);
     if (!res.headersSent) {
-      res.status(500).send(error.message);
+      res.status(500).json({ error: 'Webhook processing failed', message: error.message });
     }
   }
 });
@@ -94,23 +101,48 @@ app.use(express.json());
 
 // 1. App Installation (Authentication) - Begin OAuth
 app.get('/api/auth', async (req, res) => {
-  const shop = req.query.shop;
+  const shop = shopify.utils.sanitizeShop(req.query.shop, true);
   if (!shop) {
     return res.status(400).send('Missing shop parameter');
+  }
+
+  // Detect if we are in an iFrame (Shopify sends the 'host' parameter for embedded requests)
+  const isEmbedded = !!req.query.host;
+
+  // We MUST break out of the iFrame to set the OAuth cookie successfully.
+  // Browsers block cookies if they are set inside an iFrame.
+  if (isEmbedded && !req.query.is_redirected) {
+    console.log(`[Auth] iFrame detected for ${shop}. Breaking out to top window...`);
+    const authUrl = `${process.env.HOST}/api/auth?shop=${shop}&is_redirected=true`;
+    
+    // This small HTML snippet forces the parent Shopify Admin window to redirect
+    return res.send(`
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <script type="text/javascript">
+            window.top.location.href = "${authUrl}";
+          </script>
+        </head>
+        <body>
+          <p>Redirecting to login...</p>
+        </body>
+      </html>
+    `);
   }
 
   try {
     // Begins real authentication with Shopify Partners:
     await shopify.auth.begin({
-      shop: shopify.utils.sanitizeShop(shop, true),
+      shop,
       callbackPath: '/api/auth/callback',
       isOnline: false,
       rawRequest: req,
       rawResponse: res,
     });
   } catch (error) {
-    console.error('Error starting OAuth:', error);
-    res.status(500).send('Failed to begin OAuth');
+    console.error(`[Auth] Error starting OAuth for ${shop}:`, error.message);
+    res.status(500).json({ error: 'Failed to begin OAuth', details: error.message });
   }
 });
 
@@ -146,8 +178,8 @@ app.get('/api/auth/callback', async (req, res) => {
     
     res.redirect(redirectUrl);
   } catch (error) {
-    console.error('OAuth Callback Error:', error);
-    res.status(500).send('OAuth callback failed');
+    console.error('[AuthCallback] OAuth Callback Error:', error.message);
+    res.status(500).json({ error: 'OAuth callback failed', details: error.message });
   }
 });
 
@@ -186,7 +218,22 @@ app.get('/api/orders/count', async (req, res) => {
     res.json({ count: totalCount });
   } catch (error) {
     console.error(`[OrderCount] Error fetching orders for ${req.query.shop}:`, error.message);
-    res.status(500).json({ error: 'Failed' });
+    
+    // If the token is invalid (401) or lacks scope (403), clear the session so we can re-auth
+    if (error.message.includes('401') || error.message.includes('403') || error.message.includes('Unauthorized') || error.message.includes('Forbidden')) {
+      console.log(`[OrderCount] Session invalid (401/403) for ${req.query.shop}. Clearing database...`);
+      await Shop.findOneAndUpdate({ shop: req.query.shop }, { session: null, isInstalled: false });
+      return res.status(401).json({ 
+        error: 'Permission Required', 
+        message: 'Your app needs additional permissions (read_orders). Please refresh and re-install.' 
+      });
+    }
+
+    res.status(500).json({ 
+      error: 'API Error', 
+      message: error.message,
+      tip: 'Try re-authenticating your store if this persists.'
+    });
   }
 });
 
@@ -239,10 +286,8 @@ if (isProd) {
 
 const PORT = process.env.PORT || 5000;
 
-if (process.env.NODE_ENV !== 'production') {
-  app.listen(PORT, () => {
-    console.log(`Backend server running on http://localhost:${PORT}`);
-  });
-}
+app.listen(PORT, () => {
+  console.log(`Server running on http://localhost:${PORT}`);
+});
 
 export default app;

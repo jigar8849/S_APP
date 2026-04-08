@@ -44,6 +44,8 @@ function App() {
       } catch (err) {
         if (err.response && err.response.status === 401) {
           setError('authentication_required');
+        } else if (err.response && err.response.data.message) {
+          setError(`API Error: ${err.response.data.message}`);
         } else {
           setError('Failed to fetch orders. Please try again later.');
         }
