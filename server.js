@@ -205,22 +205,28 @@ app.get('/api/auth/callback', async (req, res) => {
 
 // 3. API Endpoint to Get Order Count
 app.get('/api/orders/count', async (req, res) => {
+  const shop = shopify.utils.sanitizeShop(req.query.shop, true);
+  
   try {
-    const shop = shopify.utils.sanitizeShop(req.query.shop, true);
-    
     if (!shop) {
+       console.log('[OrderCount] API called without a valid shop parameter');
        return res.status(400).json({ error: 'Missing shop parameter' });
     }
 
     let store = await Shop.findOne({ shop });
     
-    if (!store || !store.session) {
-      console.log(`[OrderCount] Store not found or session missing for: ${shop}`);
-      // In development fallback if you want to see something, but better to enforce logout/re-auth
-      return res.status(401).json({ error: 'Not authorized. Please login via Shopify Admin.' });
+    if (!store) {
+      console.log(`[OrderCount] Store document NOT FOUND in DB for: ${shop}`);
+      return res.status(401).json({ error: 'Auth Required', message: 'Store not found. Please re-install.' });
+    }
+
+    if (!store.session) {
+      console.log(`[OrderCount] Session MISSING for store: ${shop}`);
+      return res.status(401).json({ error: 'Session Expired', message: 'Please login via Shopify Admin.' });
     }
 
     const session = store.session;
+    console.log(`[OrderCount] Fetching count for: ${shop} using stored session`);
 
     // Use Shopify REST API to get the TOTAL order count
     const client = new shopify.clients.Rest({ session });
@@ -229,7 +235,7 @@ app.get('/api/orders/count', async (req, res) => {
     });
 
     const totalCount = countResponse.body.count;
-    console.log(`[OrderCount] Fetched real total count from Shopify: ${totalCount}`);
+    console.log(`[OrderCount] SUCCESS: Fetched real count from Shopify for ${shop}: ${totalCount}`);
 
     // Update our DB with the latest count from Shopify
     store.orderCount = totalCount;
@@ -237,22 +243,30 @@ app.get('/api/orders/count', async (req, res) => {
     
     res.json({ count: totalCount });
   } catch (error) {
-    console.error(`[OrderCount] Error fetching orders for ${req.query.shop}:`, error.message);
+    console.error(`[OrderCount] ERROR for ${shop || 'unknown shop'}:`, error.message);
     
-    // If the token is invalid (401) or lacks scope (403), clear the session so we can re-auth
-    if (error.message.includes('401') || error.message.includes('403') || error.message.includes('Unauthorized') || error.message.includes('Forbidden')) {
-      console.log(`[OrderCount] Session invalid (401/403) for ${req.query.shop}. Clearing database...`);
-      await Shop.findOneAndUpdate({ shop: req.query.shop }, { session: null, isInstalled: false });
+    // Check for specific Shopify API errors
+    if (error.message.includes('401') || error.message.includes('Unauthorized')) {
+      console.log(`[OrderCount] Shopify API returned 401 (Unauthorized) for ${shop}. Clearing session...`);
+      await Shop.findOneAndUpdate({ shop }, { session: null, isInstalled: false });
       return res.status(401).json({ 
-        error: 'Permission Required', 
-        message: 'Your app needs additional permissions (read_orders). Please refresh and re-install.' 
+        error: 'Unauthorized', 
+        message: 'Your session has expired. Please refresh the page to re-authenticate.' 
+      });
+    }
+
+    if (error.message.includes('403') || error.message.includes('Forbidden')) {
+      console.log(`[OrderCount] Shopify API returned 403 (Forbidden) for ${shop}. Missing scopes?`);
+      return res.status(403).json({ 
+        error: 'Permission Denied', 
+        message: 'App lacks required permissions. Please re-install.' 
       });
     }
 
     res.status(500).json({ 
-      error: 'API Error', 
+      error: 'Backend Error', 
       message: error.message,
-      tip: 'Try re-authenticating your store if this persists.'
+      tip: 'Check server logs for details.'
     });
   }
 });

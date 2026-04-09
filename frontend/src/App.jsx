@@ -44,12 +44,14 @@ function App() {
       } catch (err) {
         if (err.response && err.response.status === 401) {
           setError('authentication_required');
+        } else if (err.response && err.response.status === 403) {
+          setError('permission_denied');
         } else if (err.response && err.response.data.message) {
-          setError(`API Error: ${err.response.data.message}`);
+          setError(`${err.response.data.message}`);
         } else {
-          setError('Failed to fetch orders. Please try again later.');
+          setError('Failed to fetch orders. Please check your internet or try re-installing.');
         }
-        console.error(err);
+        console.error('API Error:', err);
       } finally {
         setLoading(false);
       }
@@ -121,9 +123,35 @@ function App() {
                 content: `Log in to ${shop}`,
                 onAction: handleLogin,
               }}
+              secondaryAction={{
+                content: 'Refresh Page',
+                onAction: () => window.location.reload(),
+              }}
               image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png"
             >
-              <p>You need to log in to your store to view real-time order data.</p>
+              <p>Your session has expired or the shop is not authenticated. Please log in to your store to view real-time order data.</p>
+            </EmptyState>
+          </Card>
+        </Page>
+      </AppProvider>
+    );
+  }
+
+  // 3. Permission denied state
+  if (error === 'permission_denied') {
+    return (
+      <AppProvider i18n={translations}>
+        <Page title="Permission Denied">
+          <Card>
+            <EmptyState
+              heading="Permissions Required"
+              action={{
+                content: 'Re-install App',
+                onAction: handleLogin,
+              }}
+              image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png"
+            >
+              <p>The app needs additional permissions (read_orders) to display your dashboard. Please click below to update the app.</p>
             </EmptyState>
           </Card>
         </Page>
