@@ -30,6 +30,7 @@ const app = express();
 app.set('trust proxy', 1); // Essential for fixed domains on AWS to handle HTTPS correctly
 app.use(cors());
 app.use(cookieParser());
+app.use(express.json()); // Moved to top to resolve 415 Media Type errors during registration
 
 // Request logger middleware
 app.use((req, res, next) => {
@@ -51,7 +52,7 @@ console.log(`[Config] Using Hostname: ${hostName}`);
 const shopify = shopifyApi({
   apiKey: process.env.SHOPIFY_API_KEY || 'fake_api_key',
   apiSecretKey: process.env.SHOPIFY_API_SECRET || 'fake_api_secret',
-  scopes: process.env.SCOPES ? process.env.SCOPES.split(',') : ['read_orders'],
+  scopes: process.env.SCOPES ? process.env.SCOPES.split(',') : ['write_products', 'read_orders'],
   hostName: hostName,
   hostScheme: 'https',
   apiVersion: '2026-04', // Updated to the latest April 2026 version
@@ -69,7 +70,7 @@ shopify.webhooks.addHandlers({
         const store = await Shop.findOneAndUpdate(
           { shop },
           { $inc: { orderCount: 1 } },
-          { new: true }
+          { returnDocument: 'after' }
         );
         if (store) {
           notifyClients(shop, store.orderCount);
@@ -100,8 +101,7 @@ app.post('/api/webhooks', express.text({ type: '*/*' }), async (req, res) => {
   }
 });
 
-// For all other routes parse JSON body
-app.use(express.json());
+// Removed app.use(express.json()) from here as it was moved to the top.
 
 // 1. App Installation (Authentication) - Begin OAuth
 app.get('/api/auth', async (req, res) => {
@@ -174,7 +174,7 @@ app.get('/api/auth/callback', async (req, res) => {
     await Shop.findOneAndUpdate(
       { shop: session.shop },
       { shop: session.shop, session, isInstalled: true },
-      { upsert: true, new: true }
+      { upsert: true, returnDocument: 'after' }
     );
 
     // Register webhooks after authenticating
