@@ -27,6 +27,7 @@ mongoose.connect(process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/shopify_o
   });
 
 const app = express();
+app.set('trust proxy', 1); // Essential for fixed domains on AWS to handle HTTPS correctly
 app.use(cors());
 app.use(cookieParser());
 
@@ -44,11 +45,14 @@ function notifyClients(shop, count) {
   }
 }
 
+const hostName = process.env.HOST ? process.env.HOST.replace(/https:\/\//, '') : 'localhost:5000';
+console.log(`[Config] Using Hostname: ${hostName}`);
+
 const shopify = shopifyApi({
   apiKey: process.env.SHOPIFY_API_KEY || 'fake_api_key',
   apiSecretKey: process.env.SHOPIFY_API_SECRET || 'fake_api_secret',
   scopes: process.env.SCOPES ? process.env.SCOPES.split(',') : ['read_orders'],
-  hostName: process.env.HOST ? process.env.HOST.replace(/https:\/\//, '') : 'localhost:5000',
+  hostName: hostName,
   hostScheme: 'https',
   apiVersion: '2026-04', // Updated to the latest April 2026 version
   isEmbeddedApp: true,
@@ -132,6 +136,7 @@ app.get('/api/auth', async (req, res) => {
   }
 
   try {
+    console.log(`[Auth] Starting OAuth process for: ${shop}`);
     // Begins real authentication with Shopify Partners:
     await shopify.auth.begin({
       shop,
@@ -141,14 +146,21 @@ app.get('/api/auth', async (req, res) => {
       rawResponse: res,
     });
   } catch (error) {
-    console.error(`[Auth] Error starting OAuth for ${shop}:`, error.message);
-    res.status(500).json({ error: 'Failed to begin OAuth', details: error.message });
+    console.error(`[Auth] CRITICAL ERROR for ${shop}:`, error);
+    if (!res.headersSent) {
+      res.status(500).json({ 
+        error: 'Failed to begin OAuth', 
+        message: error.message,
+        stack: process.env.NODE_ENV === 'development' ? error.stack : undefined 
+      });
+    }
   }
 });
 
 // 2. Auth Callback
 app.get('/api/auth/callback', async (req, res) => {
   try {
+    console.log(`[AuthCallback] Received callback for ${req.query.shop}. Validating...`);
     const callbackResponse = await shopify.auth.callback({
       rawRequest: req,
       rawResponse: res,
@@ -156,6 +168,7 @@ app.get('/api/auth/callback', async (req, res) => {
     
     // Extract the session from the callback
     const session = callbackResponse.session;
+    console.log(`[AuthCallback] Success! Authenticated shop: ${session.shop}`);
     
     // Store in our database
     await Shop.findOneAndUpdate(
@@ -167,19 +180,26 @@ app.get('/api/auth/callback', async (req, res) => {
     // Register webhooks after authenticating
     try {
       const response = await shopify.webhooks.register({ session });
-      console.log('Webhooks registered:', response);
+      console.log('[AuthCallback] Webhooks registered:', response);
     } catch (e) {
-      console.error('Failed to register webhooks', e);
+      console.error('[AuthCallback] Failed to register webhooks:', e.message);
     }
 
     // Send the user to the embedded app frontend
     const host = req.query.host;
     const redirectUrl = `/?shop=${session.shop}&host=${host}`;
     
+    console.log(`[AuthCallback] Redirecting user to app dashboard: ${redirectUrl}`);
     res.redirect(redirectUrl);
   } catch (error) {
-    console.error('[AuthCallback] OAuth Callback Error:', error.message);
-    res.status(500).json({ error: 'OAuth callback failed', details: error.message });
+    console.error('[AuthCallback] CRITICAL OAUTH ERROR:', error);
+    if (!res.headersSent) {
+      res.status(500).json({ 
+        error: 'OAuth callback failed', 
+        message: error.message,
+        details: 'Check if your browser is blocking cookies or if the redirect URIs in Shopify Partner Dashboard are correct.' 
+      });
+    }
   }
 });
 
